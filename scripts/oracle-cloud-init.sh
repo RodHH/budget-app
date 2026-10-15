@@ -1,10 +1,10 @@
 #!/bin/bash
 # Budget app: one-shot server setup for an Oracle Cloud Always Free VM (Ubuntu 22.04/24.04, Arm or AMD).
-# Paste this whole file into "Show advanced options → Management → Initialization script" when
+# Paste this whole file into "Show advanced options -> Management -> Initialization script" when
 # creating the instance. Fill in the values below first. They stay on your VM; never share them.
 #
 # After about 10 minutes the app is live at https://<your-public-ip-with-dashes>.sslip.io
-# (for example 129.146.10.20 → https://129-146-10-20.sslip.io). Setup log: /var/log/budget-setup.log
+# (for example 129.146.10.20 -> https://129-146-10-20.sslip.io). Setup log: /var/log/budget-setup.log
 
 # ======================= fill these in =======================
 REPO_URL="https://github.com/RodHH/budget-app.git"
