@@ -890,7 +890,7 @@ export function createApp({ db, config = {}, services = {}, now = () => new Date
       if (e instanceof HttpError) return { status: e.status, headers: {}, body: { error: e.code, message: e.message } };
       if (e.error_code) {
         log('provider error', e.error_code, e.message);
-        return { status: 502, headers: {}, body: { error: e.error_code, message: e.display_message || plaidMessage(e.error_code) } };
+        return { status: 502, headers: {}, body: { error: e.error_code, message: e.display_message || plaidMessage(e.error_code, e.message) } };
       }
       log('unhandled error', e);
       return { status: 500, headers: {}, body: { error: 'server_error', message: 'Something went wrong on the server.' } };
@@ -924,13 +924,13 @@ function validColor(c) {
   return typeof c === 'string' && /^#[0-9a-fA-F]{6}$/.test(c) ? c : '#2a78d6';
 }
 
-function plaidMessage(code) {
+function plaidMessage(code, detail) {
   return {
     ITEM_LOGIN_REQUIRED: 'Your bank needs you to sign in again. Use “Fix connection”.',
     INVALID_API_KEYS: 'The server’s Plaid keys were rejected. Check PLAID_CLIENT_ID and PLAID_SECRET.',
     RATE_LIMIT_EXCEEDED: 'The bank data provider is rate limiting requests. Try again shortly.',
     PRODUCT_NOT_READY: 'Your bank is still preparing transactions. They’ll appear after the next sync.',
-  }[code] || `The bank data provider returned an error (${code}).`;
+  }[code] || `The bank data provider returned an error (${code})${detail ? `: ${detail}` : '.'}`;
 }
 
 export { periodFor };
