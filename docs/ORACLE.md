@@ -16,7 +16,7 @@ The server downloads the app from GitHub at `RodHH/budget-app`, which `REPO_URL`
 
 ## 2. Fill in the setup script
 
-Open `scripts/oracle-cloud-init.sh` and fill in the block at the top:
+Copy the whole setup script. It's in your GitHub repo under **scripts → oracle-cloud-init.sh** (use **Copy raw file**), and attached in our Claude thread. You'll paste it into Oracle in step 3 and fill in the block at the top right there in Oracle's box:
 
 | Setting | What to put |
 |---|---|
