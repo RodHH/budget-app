@@ -1,0 +1,24 @@
+{
+  "name": "budgeting-app",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Personal budgeting web app (PWA) with budgets, rules, alerts, Plaid sync and web push.",
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "start": "node --disable-warning=ExperimentalWarning server/index.js",
+    "dev": "node scripts/build.mjs && node --disable-warning=ExperimentalWarning server/index.js",
+    "test": "node --disable-warning=ExperimentalWarning --test 'test/*.test.js'",
+    "icons": "node scripts/make-icons.mjs",
+    "demo": "node scripts/build.mjs --demo"
+  },
+  "dependencies": {
+    "preact": "^10.29.8",
+    "web-push": "3.6.7"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "sql.js": "1.13.0"
+  }
+}
