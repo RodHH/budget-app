@@ -6,7 +6,7 @@ You do the clicking in Oracle's console. A setup script does everything on the s
 
 ## Before you start: get the code into a GitHub repository
 
-The server downloads the app from GitHub at `RodHH/budget-app`, which `REPO_URL` in the script already points at. While the repo is private, the server also needs a read-only token (step 6). If you make the repo public later, leave `GITHUB_TOKEN` blank.
+The server downloads the app from GitHub at `RodHH/budget-app`, which `REPO_URL` in the script already points at. The repo is public, so leave `GITHUB_TOKEN` blank.
 
 ## 1. Create your Oracle account
 
@@ -21,7 +21,7 @@ Copy the whole setup script. It's in your GitHub repo under **scripts → oracle
 | Setting | What to put |
 |---|---|
 | `REPO_URL` | Your repository's address. It's already filled in if we used `RodHH/budget-app`. |
-| `GITHUB_TOKEN` | Only if the repo is private: a read-only GitHub token (step 6 below). |
+| `GITHUB_TOKEN` | Leave blank (the repo is public). Only needed if the repo is private: see step 6. |
 | `SETUP_CODE` | Any 8+ characters you make up. You type it once to create your login. |
 | `NOTIFY_EMAIL` | Your email address. Apple requires one for push, and it's also used for the HTTPS certificate. |
 | `PLAID_CLIENT_ID`, `PLAID_SECRET` | Your Plaid **Sandbox** keys from <https://dashboard.plaid.com/developers/keys>. You can leave these blank and add them later. |
@@ -36,7 +36,7 @@ In the Oracle console: **☰ → Compute → Instances → Create instance**.
 2. **Image and shape → Edit**:
    - **Image:** Canonical Ubuntu 24.04.
    - **Shape:** Ampere → **VM.Standard.A1.Flex**, 1 OCPU, 6 GB memory. It's labeled "Always Free-eligible".
-   - If you see "Out of capacity", use **VM.Standard.E2.1.Micro** (AMD) instead. It's also Always Free and is enough for this app.
+   - If you see "Out of capacity" (common), use **VM.Standard.E2.1.Micro** (AMD) instead. It's also Always Free and is enough for this app.
 3. **Networking:** keep "Create new virtual cloud network" and "public subnet", and make sure **Assign a public IPv4 address** is on.
 4. **Add SSH keys:** choose **Generate a key pair for me** and **Save private key**. Keep that file; you need it later to change settings.
 5. **Show advanced options → Management → Initialization script → Paste cloud-init script**, then paste the whole filled-in script.
