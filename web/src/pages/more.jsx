@@ -11,6 +11,7 @@ const SECTIONS = [
   ['prefs', 'Preferences', 'edit'],
   ['setup', 'Setup status', 'info'],
   ['install', 'Install on iPhone', 'home'],
+  ['people', 'People', 'plus'],
   ['security', 'Password & sign out', 'ok'],
 ];
 
@@ -24,7 +25,7 @@ export function More() {
         <div class="page-head"><h1>More</h1></div>
         <div class="card flush">
           <ul class="list">
-            {SECTIONS.map(([id, label, icon]) => (
+            {SECTIONS.filter(([id]) => id !== 'people' || (boot.user.is_owner && boot.user.people_enabled)).map(([id, label, icon]) => (
               <li>
                 <button class="item" onClick={() => navigate('more', { section: id })}>
                   <div class="icon-bubble"><Icon name={icon} size={20} /></div>
@@ -40,7 +41,7 @@ export function More() {
       </div>
     );
   }
-  const Body = { alerts: AlertsSection, rules: RulesSection, data: DataSection, prefs: PrefsSection, setup: SetupSection, install: InstallSection, security: SecuritySection }[section];
+  const Body = { alerts: AlertsSection, rules: RulesSection, data: DataSection, prefs: PrefsSection, setup: SetupSection, install: InstallSection, security: SecuritySection, people: PeopleSection }[section];
   return (
     <div>
       <div class="page-head" style="justify-content:flex-start">
@@ -328,6 +329,54 @@ function SecuritySection() {
         <button class="btn primary block">Change password</button>
       </form>
       <button class="btn block" style="margin-top:12px" onClick={signOut}>Sign out</button>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- people
+function PeopleSection() {
+  const { notify, boot } = useApp();
+  const [people, setPeople] = useState(null);
+  const [f, setF] = useState({ username: '', password: '' });
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { api('GET', '/api/people').then((r) => setPeople(r.people)).catch((x) => notify(x.message, true)); }, []);
+  if (!boot.user.is_owner) return <div class="card small muted">Only the person who set up the app can add or remove people.</div>;
+  if (!people) return <Loading />;
+  const add = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      const r = await api('POST', '/api/people', f);
+      setPeople(r.people);
+      notify(`Added ${f.username}. Give them the username and password; they can change the password under Password & sign out.`);
+      setF({ username: '', password: '' });
+    } catch (x) { notify(x.message, true); }
+    setBusy(false);
+  };
+  const remove = async (p) => {
+    if (!(await ask(`Remove ${p.username}? They’re signed out, their bank connections are disconnected, and their budget is moved into the server’s backups folder.`, { ok: 'Remove', danger: true }))) return;
+    try { setPeople((await api('DELETE', `/api/people/${p.id}`)).people); notify(`Removed ${p.username}.`); } catch (x) { notify(x.message, true); }
+  };
+  return (
+    <div>
+      <p class="small muted" style="margin:0 4px 12px">Everyone here has their own login and a completely separate budget: their own banks, categories, rules, alerts and notifications. Nobody can see anyone else’s.</p>
+      <div class="card flush">
+        <ul class="list">
+          {people.map((p) => (
+            <li class="item">
+              <div class="grow"><div class="title">{p.username}</div><div class="tiny muted">{p.is_owner ? 'You (owner)' : `Added ${dateTime(p.created_at)}`}</div></div>
+              {!p.is_owner && <button class="btn sm danger" onClick={() => remove(p)}>Remove</button>}
+            </li>
+          ))}
+        </ul>
+      </div>
+      <form class="card" style="margin-top:12px" onSubmit={add}>
+        <h2 style="margin-top:0;font-size:17px">Add a person</h2>
+        <Field label="Username"><input class="input" autocapitalize="none" autocomplete="off" value={f.username} onInput={(e) => setF({ ...f, username: e.currentTarget.value })} /></Field>
+        <Field label="Starting password" hint="At least 10 characters. Tell it to them in person; they can change it after signing in."><input class="input" type="text" autocomplete="new-password" value={f.password} onInput={(e) => setF({ ...f, password: e.currentTarget.value })} /></Field>
+        <button class="btn primary block" disabled={busy}>Add person</button>
+      </form>
+      <p class="tiny muted" style="margin:12px 4px">Bank connections from everyone count toward your Plaid plan’s limit.</p>
     </div>
   );
 }

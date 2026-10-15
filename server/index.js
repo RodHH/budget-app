@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createApp } from './app.js';
 import { openDatabase } from './db.js';
+import { createTenants } from './tenants.js';
 import { auth, createPlaidClient, createPush, createSecrets, generateVapidKeys } from './services/node-services.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -55,16 +56,34 @@ if (!vapid) {
 const vapidSubject = env.VAPID_SUBJECT || (PUBLIC_URL.startsWith('https://') ? PUBLIC_URL : 'mailto:budget-owner@example.com');
 const push = env.PUSH_DISABLED === '1' ? null : createPush({ ...vapid, subject: vapidSubject });
 
-const app = createApp({
-  db,
-  config: {
-    publicUrl: PUBLIC_URL || null,
-    cookieSecure: env.COOKIE_SECURE ? env.COOKIE_SECURE === 'true' : PUBLIC_URL.startsWith('https://'),
-    setupCode,
-    plaidRedirectUri: env.PLAID_REDIRECT_URI || null,
-    vapidSubjectSet: !!env.VAPID_SUBJECT,
+const baseConfig = {
+  publicUrl: PUBLIC_URL || null,
+  cookieSecure: env.COOKIE_SECURE ? env.COOKIE_SECURE === 'true' : PUBLIC_URL.startsWith('https://'),
+  setupCode,
+  plaidRedirectUri: env.PLAID_REDIRECT_URI || null,
+  vapidSubjectSet: !!env.VAPID_SUBJECT,
+};
+// Your budget lives in budget.sqlite (with every login); each person you add gets people/user-<id>.sqlite.
+const PEOPLE_DIR = path.join(DATA_DIR, 'people');
+fs.mkdirSync(PEOPLE_DIR, { recursive: true });
+const app = createTenants({
+  ownerDb: db,
+  auth,
+  openUserDb: (id) => openDatabase(path.join(PEOPLE_DIR, `user-${id}.sqlite`)),
+  archiveUserDb: (id, udb) => {
+    udb.close();
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    for (const ext of ['', '-wal', '-shm']) {
+      const f = path.join(PEOPLE_DIR, `user-${id}.sqlite${ext}`);
+      if (fs.existsSync(f)) fs.renameSync(f, path.join(DATA_DIR, 'backups', `removed-user-${id}-${stamp}.sqlite${ext}`));
+    }
+    log(`removed person ${id}; their data was moved to backups/`);
   },
-  services: { auth, secrets, plaid, push, log },
+  build: (bdb, extra) => createApp({
+    db: bdb,
+    config: { ...baseConfig, ...(extra.userId ? { userId: extra.userId } : {}) },
+    services: { auth, secrets, plaid, push, log, ...(extra.authDb ? { authDb: extra.authDb } : {}), ...(extra.tenants ? { tenants: extra.tenants } : {}) },
+  }),
 });
 
 // ---------------------------------------------------------------- static files
@@ -133,14 +152,17 @@ const server = http.createServer(async (req, res) => {
 function dailyBackup() {
   const day = new Date().toISOString().slice(0, 10);
   const dir = path.join(DATA_DIR, 'backups');
-  const file = path.join(dir, `budget-${day}.sqlite`);
-  if (fs.existsSync(file)) return;
-  try {
-    db.backupTo(file);
-    const old = fs.readdirSync(dir).filter((f) => f.endsWith('.sqlite')).sort().slice(0, -14);
-    for (const f of old) fs.unlinkSync(path.join(dir, f));
-    log(`backup written: ${file}`);
-  } catch (e) { log('backup failed', e); }
+  for (const { name, db: bdb } of app.databases()) {
+    const file = path.join(dir, `${name}-${day}.sqlite`);
+    if (fs.existsSync(file)) continue;
+    try {
+      bdb.backupTo(file);
+      // Keep the latest 14 daily copies per database.
+      const old = fs.readdirSync(dir).filter((f) => new RegExp(`^${name}-\\d{4}-\\d{2}-\\d{2}\\.sqlite$`).test(f)).sort().slice(0, -14);
+      for (const f of old) fs.unlinkSync(path.join(dir, f));
+      log(`backup written: ${file}`);
+    } catch (e) { log('backup failed', name, e); }
+  }
 }
 async function jobs() {
   try { await app.tick(); } catch (e) { log('tick failed', e); }
@@ -162,4 +184,4 @@ function loadDotEnv(file) {
   }
 }
 
-for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { server.close(); db.close(); process.exit(0); });
+for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { server.close(); for (const d of app.databases()) d.db.close(); process.exit(0); });

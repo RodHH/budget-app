@@ -29,6 +29,13 @@ const PUBLIC_ROUTES = new Set(['GET /api/health', 'GET /api/auth/state', 'POST /
 
 export function createApp({ db, config = {}, services = {}, now = () => new Date() }) {
   const { auth, secrets, plaid = null, push = null, log = () => {} } = services;
+  // Logins and sessions live in one shared database (authDb). With several people on one server,
+  // each person's budget is a separate database and a separate app instance (see server/tenants.js).
+  const adb = services.authDb || db;
+  const tenants = services.tenants || null;
+  const ownerId = () => adb.get('SELECT MIN(id) id FROM users')?.id ?? null;
+  // Which login this budget belongs to: the owner's budget, or config.userId for everyone else.
+  const budgetUserId = () => (config.userId ?? ownerId());
   const nowIso = () => now().toISOString();
   const background = new Set();
   const loginAttempts = new Map();
@@ -96,16 +103,16 @@ export function createApp({ db, config = {}, services = {}, now = () => new Date
   function createSession(userId, ua) {
     const token = auth.randomToken();
     const exp = new Date(now().getTime() + SESSION_DAYS * 864e5).toISOString();
-    db.run('INSERT INTO sessions (id_hash, user_id, created_at, expires_at, user_agent) VALUES (?,?,?,?,?)', [auth.sha256(token), userId, nowIso(), exp, (ua || '').slice(0, 200)]);
+    adb.run('INSERT INTO sessions (id_hash, user_id, created_at, expires_at, user_agent) VALUES (?,?,?,?,?)', [auth.sha256(token), userId, nowIso(), exp, (ua || '').slice(0, 200)]);
     return sessionCookie(token, SESSION_DAYS * 86400);
   }
   function currentUser(req) {
     if (config.demo) return { id: 0, username: 'preview' };
     const token = parseCookies(req.headers.cookie).bb_session;
     if (!token) return null;
-    const s = db.get('SELECT * FROM sessions WHERE id_hash = ?', [auth.sha256(token)]);
+    const s = adb.get('SELECT * FROM sessions WHERE id_hash = ?', [auth.sha256(token)]);
     if (!s || s.expires_at < nowIso()) return null;
-    return db.get('SELECT id, username FROM users WHERE id = ?', [s.user_id]) || null;
+    return adb.get('SELECT id, username FROM users WHERE id = ?', [s.user_id]) || null;
   }
   function rateLimit(ip) {
     const t = now().getTime();
@@ -407,7 +414,7 @@ export function createApp({ db, config = {}, services = {}, now = () => new Date
   route('GET', '/api/health', () => ({ ok: true }));
 
   route('GET', '/api/auth/state', ({ req }) => ({
-    setup_required: !config.demo && !db.get('SELECT 1 x FROM users LIMIT 1'),
+    setup_required: !config.demo && !adb.get('SELECT 1 x FROM users LIMIT 1'),
     authenticated: !!currentUser(req),
     setup_code_required: !!config.setupCode,
     demo: !!config.demo,
@@ -415,45 +422,45 @@ export function createApp({ db, config = {}, services = {}, now = () => new Date
 
   route('POST', '/api/auth/setup', ({ req, body }) => {
     if (config.demo) throw bad('Not available in the preview.');
-    if (db.get('SELECT 1 x FROM users LIMIT 1')) throw new HttpError(409, 'already_set_up', 'This app already has an owner. Sign in instead.');
+    if (adb.get('SELECT 1 x FROM users LIMIT 1')) throw new HttpError(409, 'already_set_up', 'This app already has an owner. Sign in instead.');
     rateLimit(req.ip);
     if (config.setupCode && body.setup_code !== config.setupCode) throw new HttpError(403, 'bad_setup_code', 'That setup code is not right. It is printed in the server log on first start.');
     const username = str(body.username, 60, 'Username');
     if (!username) throw bad('Choose a username.');
     validatePassword(body.password);
-    const id = db.run('INSERT INTO users (username, password_hash, created_at) VALUES (?,?,?)', [username, auth.hashPassword(body.password), nowIso()]).lastInsertRowid;
+    const id = adb.run('INSERT INTO users (username, password_hash, created_at) VALUES (?,?,?)', [username, auth.hashPassword(body.password), nowIso()]).lastInsertRowid;
     if (body.timezone && validTz(body.timezone)) saveSettings({ ...getSettings(), timezone: body.timezone });
     return { status: 200, body: { ok: true }, cookies: [createSession(id, req.headers['user-agent'])] };
   });
 
   route('POST', '/api/auth/login', ({ req, body }) => {
     rateLimit(req.ip);
-    const u = db.get('SELECT * FROM users WHERE username = ?', [String(body.username || '').trim()]);
+    const u = adb.get('SELECT * FROM users WHERE username = ? COLLATE NOCASE', [String(body.username || '').trim()]);
     const ok = u && auth.verifyPassword(String(body.password || ''), u.password_hash);
     if (!ok) throw new HttpError(401, 'bad_credentials', 'Username or password is incorrect.');
     loginAttempts.delete(req.ip);
-    db.run('DELETE FROM sessions WHERE expires_at < ?', [nowIso()]);
+    adb.run('DELETE FROM sessions WHERE expires_at < ?', [nowIso()]);
     return { status: 200, body: { ok: true }, cookies: [createSession(u.id, req.headers['user-agent'])] };
   });
 
   route('POST', '/api/auth/logout', ({ req }) => {
     const token = parseCookies(req.headers.cookie).bb_session;
-    if (token) db.run('DELETE FROM sessions WHERE id_hash = ?', [auth.sha256(token)]);
+    if (token) adb.run('DELETE FROM sessions WHERE id_hash = ?', [auth.sha256(token)]);
     return { status: 200, body: { ok: true }, cookies: [sessionCookie('', 0)] };
   });
 
   route('POST', '/api/auth/password', ({ user, body }) => {
     if (config.demo) throw bad('Not available in the preview.');
-    const u = db.get('SELECT * FROM users WHERE id = ?', [user.id]);
+    const u = adb.get('SELECT * FROM users WHERE id = ?', [user.id]);
     if (!auth.verifyPassword(String(body.current || ''), u.password_hash)) throw new HttpError(401, 'bad_credentials', 'Current password is incorrect.');
     validatePassword(body.next);
-    db.run('UPDATE users SET password_hash = ? WHERE id = ?', [auth.hashPassword(body.next), u.id]);
-    db.run('DELETE FROM sessions WHERE user_id = ?', [u.id]);
+    adb.run('UPDATE users SET password_hash = ? WHERE id = ?', [auth.hashPassword(body.next), u.id]);
+    adb.run('DELETE FROM sessions WHERE user_id = ?', [u.id]);
     return { status: 200, body: { ok: true, signed_out: true }, cookies: [sessionCookie('', 0)] };
   });
 
   route('GET', '/api/bootstrap', ({ user }) => ({
-    user: { username: user.username },
+    user: { username: user.username, is_owner: !config.demo && user.id === ownerId(), people_enabled: !!tenants },
     today: today(),
     settings: getSettings(),
     categories: categoriesView(),
@@ -837,6 +844,44 @@ export function createApp({ db, config = {}, services = {}, now = () => new Date
     return { results };
   });
 
+  // People (owner only): each person gets their own login and a completely separate budget.
+  function requireOwner(user) {
+    if (user.id !== ownerId()) throw new HttpError(403, 'owner_only', 'Only the person who set up the app can manage people.');
+    if (!tenants) throw bad('Adding people isn’t available here.');
+  }
+  const peopleView = () => adb.all('SELECT id, username, created_at FROM users ORDER BY id').map((u) => ({ ...u, is_owner: u.id === ownerId() }));
+  route('GET', '/api/people', ({ user }) => { requireOwner(user); return { people: peopleView() }; });
+  route('POST', '/api/people', ({ user, body }) => {
+    requireOwner(user);
+    const username = str(body.username, 60, 'Username');
+    if (!username) throw bad('Choose a username.');
+    if (adb.get('SELECT 1 x FROM users WHERE username = ? COLLATE NOCASE', [username])) throw bad('That username is taken.');
+    validatePassword(body.password);
+    const id = adb.run('INSERT INTO users (username, password_hash, created_at) VALUES (?,?,?)', [username, auth.hashPassword(body.password), nowIso()]).lastInsertRowid;
+    tenants.created(id, { timezone: getSettings().timezone });
+    return { people: peopleView() };
+  });
+  route('DELETE', '/api/people/:id', async ({ user, params }) => {
+    requireOwner(user);
+    const id = Number(params.id);
+    if (id === ownerId()) throw bad('You can’t remove yourself.');
+    if (!adb.get('SELECT 1 x FROM users WHERE id = ?', [id])) throw notFound('Person not found.');
+    await tenants.removed(id);
+    adb.tx(() => {
+      adb.run('DELETE FROM sessions WHERE user_id = ?', [id]);
+      adb.run('DELETE FROM users WHERE id = ?', [id]);
+    });
+    return { people: peopleView() };
+  });
+
+  /** Disconnects every bank in this budget at Plaid (used when a person is removed). */
+  async function disconnectAllBanks() {
+    if (!plaid || !plaid.configured) return;
+    for (const it of db.all('SELECT * FROM plaid_items')) {
+      try { await plaid.itemRemove(secrets.decrypt(it.access_token_enc)); } catch (e) { log('itemRemove failed', e.error_code || e.message); }
+    }
+  }
+
   // Backup & sample data
   route('GET', '/api/export/json', () => ({
     status: 200,
@@ -881,6 +926,10 @@ export function createApp({ db, config = {}, services = {}, now = () => new Date
       }
       const user = currentUser(req);
       if (!isPublic && !user) throw new HttpError(401, 'unauthenticated', 'Please sign in.');
+      // Defense in depth: a session may only reach the budget it owns (auth routes are shared).
+      if (user && !config.demo && !path.startsWith('/api/auth/') && user.id !== budgetUserId()) {
+        throw new HttpError(403, 'wrong_budget', 'Request blocked.');
+      }
       const m = path.match(match.re);
       const params = Object.fromEntries(match.keys.map((k, i) => [k, decodeURIComponent(m[i + 1])]));
       const out = await match.fn({ req, user, params, query: req.query || {}, body: req.body || {} });
@@ -905,12 +954,12 @@ export function createApp({ db, config = {}, services = {}, now = () => new Date
       const due = db.all("SELECT * FROM plaid_items WHERE status != 'login_required' AND (last_attempt_at IS NULL OR last_attempt_at < ?)", [cutoff]);
       for (const it of due) await syncItem({ db, plaid, secrets, nowIso }, it);
     }
-    db.run('DELETE FROM sessions WHERE expires_at < ?', [nowIso()]);
+    if (!services.authDb) adb.run('DELETE FROM sessions WHERE expires_at < ?', [nowIso()]);
     checkAlerts();
   }
 
   return {
-    handle, tick, checkAlerts, syncAll, getSettings,
+    handle, tick, checkAlerts, syncAll, getSettings, saveSettings, disconnectAllBanks, db,
     idle: () => Promise.all([...background]),
   };
 }
