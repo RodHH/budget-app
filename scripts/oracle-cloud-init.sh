@@ -23,6 +23,12 @@ export DEBIAN_FRONTEND=noninteractive
 
 if [ -z "$SETUP_CODE" ]; then SETUP_CODE=$(head -c 6 /dev/urandom | od -An -tx1 | tr -d ' \n' | tr a-f A-F); fi
 
+# --- small servers (E2.1.Micro has 1 GB): add 2 GB swap so the build doesn't run out of memory
+if [ "$(awk '/MemTotal/{print $2}' /proc/meminfo)" -lt 2000000 ] && [ ! -f /swapfile ]; then
+  fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
+  echo '/swapfile none swap sw 0 0' >>/etc/fstab
+fi
+
 # --- packages: Node 22, git, Caddy (automatic HTTPS), firewall persistence
 apt-get update -y
 apt-get install -y ca-certificates curl git gnupg iptables-persistent debian-keyring debian-archive-keyring apt-transport-https
