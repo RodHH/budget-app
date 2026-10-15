@@ -7,17 +7,17 @@
 # (for example 129.146.10.20 -> https://129-146-10-20.sslip.io). Setup log: /var/log/budget-setup.log
 
 # ======================= fill these in =======================
-REPO_URL="https://github.com/RodHH/budget-app.git"
-GITHUB_TOKEN=""        # only if the repo is private: a fine-grained, read-only "Contents" token
-SETUP_CODE=""          # make one up (8+ characters); you type it once to create your login
-NOTIFY_EMAIL=""        # your email; Apple requires a contact address for push notifications
-PLAID_ENV="sandbox"    # sandbox now; production later for real banks
-PLAID_CLIENT_ID=""     # optional now, can be added later with: sudo budget-config KEY=value
-PLAID_SECRET=""
+REPO_URL="${REPO_URL:-https://github.com/RodHH/budget-app.git}"
+GITHUB_TOKEN="${GITHUB_TOKEN:-}"        # only if the repo is private: a fine-grained, read-only "Contents" token
+SETUP_CODE="${SETUP_CODE:-}"          # make one up (8+ characters); you type it once to create your login
+NOTIFY_EMAIL="${NOTIFY_EMAIL:-}"        # your email; Apple requires a contact address for push notifications
+PLAID_ENV="${PLAID_ENV:-sandbox}"    # sandbox now; production later for real banks
+PLAID_CLIENT_ID="${PLAID_CLIENT_ID:-}"     # optional now, can be added later with: sudo budget-config KEY=value
+PLAID_SECRET="${PLAID_SECRET:-}"
 # =============================================================
 
 set -euo pipefail
-exec >>/var/log/budget-setup.log 2>&1
+exec > >(tee -a /var/log/budget-setup.log) 2>&1
 echo "== budget setup started $(date -u)"
 export DEBIAN_FRONTEND=noninteractive
 
