@@ -1,6 +1,6 @@
 // Service worker: offline app shell + push notifications.
 // Financial data (/api/*) is never cached; it always comes from the server.
-const CACHE = 'budget-shell-v1';
+const CACHE = 'budget-shell-v2';
 const SHELL = ['/', '/styles.css', '/dist/app.js', '/manifest.webmanifest', '/icons/icon-192.png', '/icons/apple-touch-icon.png'];
 
 self.addEventListener('install', (event) => {

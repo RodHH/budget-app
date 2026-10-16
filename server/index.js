@@ -103,6 +103,16 @@ const SECURITY_HEADERS = {
   ...(PUBLIC_URL.startsWith('https://') ? { 'strict-transport-security': 'max-age=31536000' } : {}),
 };
 
+let assetVersionCache = null;
+function assetVersion() {
+  if (!assetVersionCache) {
+    const h = crypto.createHash('sha256');
+    for (const f of ['dist/app.js', 'styles.css']) { try { h.update(fs.readFileSync(path.join(WEB, f))); } catch { /* not built yet */ } }
+    assetVersionCache = h.digest('hex').slice(0, 10);
+  }
+  return assetVersionCache;
+}
+
 function serveStatic(req, res, urlPath) {
   let rel = decodeURIComponent(urlPath);
   if (rel === '/' || rel === '/oauth-return' || !path.extname(rel)) rel = '/index.html';
@@ -111,6 +121,9 @@ function serveStatic(req, res, urlPath) {
   fs.readFile(file, (err, buf) => {
     if (err) return send(res, 404, { 'content-type': 'text/plain' }, 'Not found');
     const ext = path.extname(file);
+    // Version the script and stylesheet URLs so an installed app picks up an update on the next open
+    // instead of running the copy its service worker cached.
+    if (rel === '/index.html') buf = Buffer.from(buf.toString('utf8').replace(/"\/(dist\/app\.js|styles\.css)"/g, `"/$1?v=${assetVersion()}"`));
     const cache = ext === '.html' || rel === '/sw.js' || ext === '.webmanifest' ? 'no-cache' : 'public, max-age=3600';
     send(res, 200, { 'content-type': TYPES[ext] || 'application/octet-stream', 'cache-control': cache }, buf);
   });
