@@ -120,6 +120,21 @@ export function CategorySelect({ categories, value, onChange, includeNone = true
   );
 }
 
+/** Savings bucket picker, grouped by savings account. `accountId` limits it to one account. */
+export function BucketSelect({ savings, value, onChange, accountId, noneLabel = 'Not assigned', id }) {
+  const accounts = savings.accounts.filter((a) => a.buckets.length && (accountId == null || a.id === accountId));
+  return (
+    <select id={id} class="input" value={value ?? ''} onChange={(e) => onChange(e.currentTarget.value ? Number(e.currentTarget.value) : null)}>
+      <option value="">{noneLabel}</option>
+      {accounts.map((a) => (
+        <optgroup label={`${a.name}${a.mask ? ` ••${a.mask}` : ''}`}>
+          {a.buckets.map((b) => <option value={b.id}>{b.icon} {b.name}</option>)}
+        </optgroup>
+      ))}
+    </select>
+  );
+}
+
 // ---------------------------------------------------------------- budget status
 export function StatusTag({ status }) {
   const s = budgetState(status);
@@ -166,6 +181,7 @@ export function TxnPills({ t }) {
       {t.excluded && <span class="pill">Excluded</span>}
       {t.category_kind === 'transfer' && <span class="pill">Not counted</span>}
       {t.category_kind === 'expense' && t.amount_cents > 0 && <span class="pill">Refund</span>}
+      {t.buckets?.map((b) => <span class="pill">{b.icon} {b.kind === 'paid_from' ? `Paid from ${b.name}` : b.name}</span>)}
       {t.is_sample && <span class="pill sample">Sample</span>}
       {t.is_sandbox && <span class="pill sandbox">Test data</span>}
     </>

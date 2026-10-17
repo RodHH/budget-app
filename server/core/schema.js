@@ -77,13 +77,38 @@ CREATE TABLE IF NOT EXISTS alert_events (
   UNIQUE (category_id, period_start, threshold)
 );
 
+-- Savings buckets: named pots of money inside a savings account. A bucket's balance is the sum
+-- of its moves: tagged deposits/withdrawals in that account ('txn'), purchases elsewhere paid
+-- from the bucket ('paid_from'), money assigned or moved by hand ('adjust'), and what was
+-- already saved when the bucket was created ('start', not counted as saved this month). A NULL amount
+-- means "the whole transaction", so it follows the bank if a pending amount changes.
+CREATE TABLE IF NOT EXISTS savings_buckets (
+  id INTEGER PRIMARY KEY, account_id INTEGER NOT NULL REFERENCES accounts(id), name TEXT NOT NULL,
+  icon TEXT, color TEXT, monthly_target_cents INTEGER, goal_cents INTEGER, goal_date TEXT,
+  sort_order INTEGER NOT NULL DEFAULT 0, created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS bucket_moves (
+  id INTEGER PRIMARY KEY, bucket_id INTEGER NOT NULL REFERENCES savings_buckets(id),
+  transaction_id INTEGER REFERENCES transactions(id),
+  kind TEXT NOT NULL CHECK (kind IN ('txn','paid_from','adjust','start')),
+  amount_cents INTEGER, date TEXT, note TEXT, created_at TEXT
+);
+CREATE INDEX IF NOT EXISTS bucket_moves_txn ON bucket_moves(transaction_id);
+CREATE INDEX IF NOT EXISTS bucket_moves_bucket ON bucket_moves(bucket_id);
+
 CREATE TABLE IF NOT EXISTS push_subscriptions (
   id INTEGER PRIMARY KEY, endpoint TEXT UNIQUE NOT NULL, p256dh TEXT NOT NULL, auth TEXT NOT NULL,
   label TEXT, created_at TEXT, last_success_at TEXT, last_error TEXT
 );
 `;
 
+// Columns added after the first release (CREATE TABLE IF NOT EXISTS won't add them).
+const ADDED_COLUMNS = [['rules', 'bucket_id', 'INTEGER REFERENCES savings_buckets(id)']];
+
 export function migrate(db) {
   db.exec(SCHEMA);
+  for (const [table, col, type] of ADDED_COLUMNS) {
+    if (!db.all(`PRAGMA table_info(${table})`).some((c) => c.name === col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`);
+  }
   db.run("INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', ?)", [String(SCHEMA_VERSION)]);
 }

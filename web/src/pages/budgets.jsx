@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'preact/hooks';
 import { api, centsToInput, money, ordinal, parseMoney, PERIOD_LABEL, WEEKDAYS, weekdayDate } from '../lib.js';
+import { SavingsTab } from './savings.jsx';
 import { BudgetBar, Field, Icon, MoneyInput, Seg, Sheet, StatusTag, Switch, useApp } from '../ui.jsx';
 
 const COLORS = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#6250d6', '#e34948', '#8a5a3c', '#858e89'];
-const KINDS = [['expense', 'Spending'], ['income', 'Income'], ['transfer', 'Transfers'], ['archived', 'Archived']];
+const KINDS = [['expense', 'Spending'], ['savings', 'Savings'], ['income', 'Income'], ['transfer', 'Transfers'], ['archived', 'Archived']];
 
 export function Budgets() {
   const { boot, refresh, route, notify } = useApp();
@@ -33,7 +34,7 @@ export function Budgets() {
     <div>
       <div class="page-head">
         <h1>Budgets</h1>
-        <button class="btn sm" onClick={() => setReorder(!reorder)}>{reorder ? 'Done' : 'Reorder'}</button>
+        {tab !== 'savings' && <button class="btn sm" onClick={() => setReorder(!reorder)}>{reorder ? 'Done' : 'Reorder'}</button>}
       </div>
       {budgeted.length > 0 && tab === 'expense' && (
         <div class="card" style="margin-bottom:12px">
@@ -47,6 +48,7 @@ export function Budgets() {
       <Seg label="Category type" value={tab} onChange={setTab} options={KINDS} />
       {tab === 'transfer' && <p class="small muted" style="margin:12px 4px 0">Anything in these categories is left out of income and spending, so moving money between your accounts or paying a card isn’t counted twice.</p>}
       {tab === 'income' && <p class="small muted" style="margin:12px 4px 0">Money in on these categories counts as income.</p>}
+      {tab === 'savings' ? <SavingsTab /> : (<>
       <div class="card flush" style="margin-top:12px">
         {cats.length === 0 && <div class="empty">{tab === 'archived' ? 'No archived categories.' : 'No categories here yet.'}</div>}
         <ul class="list">
@@ -83,6 +85,7 @@ export function Budgets() {
         </ul>
       </div>
       {tab !== 'archived' && <button class="btn block" style="margin-top:12px" onClick={() => setEditing({ kind: tab })}><Icon name="plus" size={18} />New category</button>}
+      </>)}
       {editing && <CategorySheet cat={editing} onClose={() => setEditing(null)} onDone={done} />}
     </div>
   );

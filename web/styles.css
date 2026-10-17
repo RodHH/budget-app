@@ -170,6 +170,7 @@ a { color: var(--accent); }
 .progress > span { display: block; height: 100%; border-radius: 999px; background: var(--good); transition: width 0.3s ease; }
 .progress.warn > span { background: var(--warn); }
 .progress.over > span { background: var(--crit); }
+.progress.save > span { background: var(--accent); }
 .status-tag { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 600; }
 .status-tag svg { width: 14px; height: 14px; }
 .budget-right { text-align: right; display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
@@ -203,7 +204,7 @@ textarea.input { min-height: 80px; resize: vertical; }
 .money-input::before { content: "$"; position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: var(--ink-3); font-size: 17px; }
 .money-input .input { padding-left: 28px; }
 .seg { display: flex; background: var(--surface-2); border-radius: 12px; padding: 3px; gap: 3px; }
-.seg button { flex: 1; min-height: 40px; border: 0; background: transparent; border-radius: 9px; font-weight: 600; font-size: 14px; color: var(--ink-2); cursor: pointer; }
+.seg button { flex: 1; min-width: 0; padding: 0 4px; white-space: nowrap; min-height: 40px; border: 0; background: transparent; border-radius: 9px; font-weight: 600; font-size: clamp(12px, 3.4vw, 14px); color: var(--ink-2); cursor: pointer; }
 .seg button[aria-pressed="true"] { background: var(--surface); color: var(--ink); box-shadow: var(--shadow); }
 .switch { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 52px; cursor: pointer; }
 .switch input { appearance: none; -webkit-appearance: none; width: 51px; height: 31px; border-radius: 999px; background: var(--surface-3); position: relative; flex: none; transition: background 0.2s; cursor: pointer; margin: 0; }

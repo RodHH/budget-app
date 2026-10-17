@@ -11,6 +11,7 @@
 //  - Your manual category / merchant edits are never overwritten by later bank updates.
 import { categoryIdForKey, systemKeyForPlaid } from './categories.js';
 import { findRule, loadRules } from './rules.js';
+import { applyRuleBucket } from './buckets.js';
 
 export class SyncError extends Error {
   constructor(code, message) { super(message || code); this.error_code = code; }
@@ -77,8 +78,8 @@ export function upsertPlaidAccounts(db, item, accounts, now) {
 
 function autoCategory(db, rules, t, merchant) {
   const rule = findRule(rules, { merchant, original_name: t.name });
-  if (rule && rule.category_id) return { category_id: rule.category_id, rename: rule.rename_to || null };
-  return { category_id: categoryIdForKey(db, systemKeyForPlaid(t.personal_finance_category)), rename: rule?.rename_to || null };
+  if (rule && rule.category_id) return { category_id: rule.category_id, rename: rule.rename_to || null, rule };
+  return { category_id: categoryIdForKey(db, systemKeyForPlaid(t.personal_finance_category)), rename: rule?.rename_to || null, rule };
 }
 
 export function applySync(db, item, batch, cursor, now) {
@@ -108,6 +109,9 @@ export function applySync(db, item, batch, cursor, now) {
         db.run('UPDATE transactions SET category_id = ?, category_locked = 1 WHERE id = ?', [pendingRow.category_id, row.id]);
       }
       if (pendingRow.notes && !row.notes) db.run('UPDATE transactions SET notes = ? WHERE id = ?', [pendingRow.notes, row.id]);
+      if (!db.get('SELECT 1 x FROM bucket_moves WHERE transaction_id = ?', [row.id])) {
+        db.run('UPDATE bucket_moves SET transaction_id = ? WHERE transaction_id = ?', [row.id, pendingRow.id]);
+      }
       db.run('UPDATE transactions SET deleted_at = ? WHERE id = ?', [now, pendingRow.id]);
       row = db.get('SELECT * FROM transactions WHERE id = ?', [row.id]);
     }
@@ -124,13 +128,14 @@ export function applySync(db, item, batch, cursor, now) {
       );
       counts.updated++;
     } else {
-      db.run(
+      const ins = db.run(
         `INSERT INTO transactions (account_id, date, amount_cents, merchant, original_name, category_id,
            pending, source, plaid_transaction_id, plaid_category, is_sandbox, created_at, updated_at)
          VALUES (?,?,?,?,?,?,?, 'plaid', ?,?,?,?,?)`,
         [accountId(t.account_id), date, amount, auto.rename || bankMerchant, t.name, auto.category_id,
           t.pending ? 1 : 0, t.transaction_id, pfcStr, sandbox, now, now],
       );
+      applyRuleBucket(db, auto.rule, ins.lastInsertRowid, accountId(t.account_id), now);
       counts.added++;
     }
   };

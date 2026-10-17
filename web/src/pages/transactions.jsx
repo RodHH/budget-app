@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'preact/hooks';
 import { api, centsToInput, dayLabel, money, parseMoney, ask } from '../lib.js';
-import { CategorySelect, Field, Icon, MoneyInput, Seg, Sheet, Switch, TxnPills, TxnRow, useApp } from '../ui.jsx';
+import { BucketSelect, CategorySelect, Field, Icon, MoneyInput, Seg, Sheet, Switch, TxnPills, TxnRow, useApp } from '../ui.jsx';
 import { RuleSheet } from './rules.jsx';
 import { SampleBanner } from './dashboard.jsx';
 
@@ -144,7 +144,7 @@ export function Transactions() {
       )}
       {bulkCat && <BulkCategory count={selected.size} onClose={() => setBulkCat(false)} onPick={(id) => bulk({ category_id: id })} />}
       {editing && <TxnSheet txn={editing} onClose={() => setEditing(null)} onSaved={saved} onMakeRule={(t) => { setEditing(null); setRuleFor(t); }} />}
-      {ruleFor && <RuleSheet rule={{ pattern: ruleFor.merchant, category_id: ruleFor.category_id, match_type: 'contains', apply_existing: true }} onClose={() => setRuleFor(null)} onSaved={() => { setRuleFor(null); load(); }} />}
+      {ruleFor && <RuleSheet rule={{ pattern: ruleFor.merchant, category_id: ruleFor.category_id, bucket_id: ruleFor.bucket_id, match_type: 'contains', apply_existing: true }} onClose={() => setRuleFor(null)} onSaved={() => { setRuleFor(null); load(); }} />}
     </div>
   );
 }
@@ -171,16 +171,41 @@ export function TxnSheet({ txn, onClose, onSaved, onMakeRule }) {
   });
   const [busy, setBusy] = useState(false);
   const set = (k) => (v) => setF((x) => ({ ...x, [k]: v }));
+
+  // Savings buckets: a savings-account transaction is tagged to its buckets (optionally split);
+  // money out of any other account can be "paid from" one bucket.
+  const tags = txn.buckets || [];
+  const [bk, setBk] = useState({
+    touched: false, split: tags.length > 1, paidFrom: tags[0]?.kind === 'paid_from',
+    rows: tags.length ? tags.map((b) => ({ bucket_id: b.bucket_id, amount: centsToInput(Math.abs(b.amount_cents)) })) : [{ bucket_id: null, amount: '' }],
+  });
+  const setBucket = (patch) => setBk((x) => ({ ...x, ...patch, touched: true }));
+  const setRow = (i, patch) => setBucket({ rows: bk.rows.map((r, j) => (j === i ? { ...r, ...patch } : r)) });
+  const accountId = manual ? (f.account_id ? Number(f.account_id) : null) : txn.account_id;
+  const savingsAcct = boot.savings.accounts.find((a) => a.id === accountId && a.buckets.length);
+  const isOut = manual ? kind === 'out' : txn.amount_cents < 0;
+  const canPayFrom = !savingsAcct && isOut && boot.savings.buckets.length > 0;
+  const totalCents = manual ? parseMoney(f.amount) || 0 : Math.abs(txn.amount_cents);
+  const splitCents = bk.rows.reduce((s, r) => s + (r.bucket_id ? parseMoney(r.amount) || 0 : 0), 0);
+  const bucketsBody = () => {
+    if (savingsAcct) {
+      if (!bk.split) return bk.rows[0].bucket_id ? [{ bucket_id: bk.rows[0].bucket_id }] : [];
+      return bk.rows.filter((r) => r.bucket_id).map((r) => ({ bucket_id: r.bucket_id, amount_cents: parseMoney(r.amount) || 0 }));
+    }
+    return canPayFrom && bk.paidFrom && bk.rows[0].bucket_id ? [{ bucket_id: bk.rows[0].bucket_id }] : [];
+  };
   const save = async () => {
     const cents = parseMoney(f.amount);
     if (manual && (!cents || cents <= 0)) { notify('Enter an amount greater than $0', true); return; }
     setBusy(true);
     try {
+      if (canPayFrom && bk.paidFrom && !bk.rows[0].bucket_id) { notify('Pick which savings bucket paid for this', true); return; }
       const body = { merchant: f.merchant, category_id: f.category_id, notes: f.notes, excluded: f.excluded };
+      if (bk.touched || (isNew && (savingsAcct || canPayFrom))) body.buckets = bucketsBody();
       if (manual) Object.assign(body, { amount_cents: kind === 'in' ? cents : -cents, date: f.date, account_id: f.account_id ? Number(f.account_id) : null, pending: f.pending });
       const r = isNew ? await api('POST', '/api/transactions', body) : await api('PATCH', `/api/transactions/${txn.id}`, body);
       if (r.alerts?.length) notify(r.alerts[0].title); else notify(isNew ? 'Transaction added' : 'Saved');
-      if (r.alerts?.length) refresh();
+      if (r.alerts?.length || body.buckets) refresh();
       onSaved(r.transaction);
     } catch (e) { notify(e.message, true); } finally { setBusy(false); }
   };
@@ -229,6 +254,41 @@ export function TxnSheet({ txn, onClose, onSaved, onMakeRule }) {
           </Field>
         </>
       )}
+      {savingsAcct && (
+        <div class="card" style="margin-bottom:14px">
+          <Field label={isOut ? 'Take from savings bucket' : 'Add to savings bucket'} hint={bk.split ? `${money(splitCents)} of ${money(totalCents)} assigned${splitCents < totalCents ? `. The other ${money(totalCents - splitCents)} stays not assigned.` : '.'}` : null}>
+            {!bk.split ? (
+              <BucketSelect savings={boot.savings} accountId={savingsAcct.id} value={bk.rows[0].bucket_id} onChange={(v) => setRow(0, { bucket_id: v })} />
+            ) : (
+              <div class="stack" style="gap:8px">
+                {bk.rows.map((r, i) => (
+                  <div class="row" style="gap:8px">
+                    <div class="grow"><BucketSelect savings={boot.savings} accountId={savingsAcct.id} value={r.bucket_id} onChange={(v) => setRow(i, { bucket_id: v })} noneLabel="Pick a bucket" /></div>
+                    <div style="width:100px;flex:none"><MoneyInput value={r.amount} onInput={(v) => setRow(i, { amount: v })} /></div>
+                    {bk.rows.length > 1 && <button class="icon-btn" aria-label="Remove this bucket" onClick={() => setBucket({ rows: bk.rows.filter((_, j) => j !== i) })}><Icon name="x" /></button>}
+                  </div>
+                ))}
+                {bk.rows.length < savingsAcct.buckets.length && <button class="btn sm" onClick={() => setBucket({ rows: [...bk.rows, { bucket_id: null, amount: '' }] })}><Icon name="plus" size={16} />Add another bucket</button>}
+              </div>
+            )}
+          </Field>
+          {savingsAcct.buckets.length > 1 && (
+            <button class="btn sm" onClick={() => setBucket({ split: !bk.split, rows: bk.split ? [bk.rows[0]] : [{ ...bk.rows[0], amount: bk.rows[0].amount || centsToInput(totalCents) }] })}>
+              {bk.split ? 'Use one bucket' : 'Split across buckets'}
+            </button>
+          )}
+        </div>
+      )}
+      {canPayFrom && (
+        <div class="card" style="padding:4px 16px;margin-bottom:14px">
+          <Switch label="Paid from savings" hint="Takes it out of a savings bucket. It still counts as spending, but not against this category’s monthly budget." checked={bk.paidFrom} onChange={(v) => setBucket({ paidFrom: v })} />
+          {bk.paidFrom && (
+            <div style="padding:4px 0 12px">
+              <Field label="Which bucket"><BucketSelect savings={boot.savings} value={bk.rows[0].bucket_id} onChange={(v) => setRow(0, { bucket_id: v })} noneLabel="Pick a bucket" /></Field>
+            </div>
+          )}
+        </div>
+      )}
       <Field label="Notes"><textarea class="input" value={f.notes} onInput={(e) => set('notes')(e.currentTarget.value)} placeholder="Optional" /></Field>
       <div class="card" style="padding:4px 16px">
         <Switch label="Exclude from budgets and totals" hint="For reimbursed or one-off items you don’t want counted." checked={f.excluded} onChange={set('excluded')} />
@@ -236,7 +296,7 @@ export function TxnSheet({ txn, onClose, onSaved, onMakeRule }) {
       </div>
       {!isNew && (
         <div class="stack" style="margin-top:16px">
-          <button class="btn block" onClick={() => onMakeRule({ ...txn, merchant: f.merchant, category_id: f.category_id })}><Icon name="rules" size={18} />Always categorize “{f.merchant}” like this</button>
+          <button class="btn block" onClick={() => onMakeRule({ ...txn, merchant: f.merchant, category_id: f.category_id, bucket_id: savingsAcct && !bk.split ? bk.rows[0].bucket_id : null })}><Icon name="rules" size={18} />Always categorize “{f.merchant}” like this</button>
           {manual && <button class="btn block danger" onClick={del}>Delete transaction</button>}
           {!manual && <p class="tiny muted">Amount and date come from your bank. To leave this out of your totals, turn on Exclude.</p>}
         </div>

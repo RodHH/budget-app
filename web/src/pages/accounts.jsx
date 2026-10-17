@@ -170,7 +170,7 @@ function AccountSheet({ acct, onClose, onDone }) {
   return (
     <Sheet title={isNew ? 'New account' : 'Edit account'} onClose={onClose} actions={<button class="btn primary sm" onClick={save}>Save</button>}>
       <Field label="Name"><input class="input" value={f.name} onInput={(e) => set('name')(e.currentTarget.value)} placeholder="e.g. Cash wallet" /></Field>
-      {isNew && <Field label="Type"><Seg label="Type" value={f.type} onChange={set('type')} options={[['depository', 'Bank'], ['credit', 'Credit card'], ['cash', 'Cash']]} /></Field>}
+      {isNew && <Field label="Type"><Seg label="Type" value={f.type} onChange={set('type')} options={[['depository', 'Bank'], ['savings', 'Savings'], ['credit', 'Credit card'], ['cash', 'Cash']]} /></Field>}
       <Field label="Balance (optional)"><MoneyInput value={f.balance} onInput={set('balance')} /></Field>
       {!isNew && <div class="card" style="padding:4px 16px"><Switch label="Hide from lists" checked={f.hidden} onChange={set('hidden')} /></div>}
       {!isNew && <button class="btn block danger" style="margin-top:16px" onClick={del}>Delete account</button>}

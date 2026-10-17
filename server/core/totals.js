@@ -8,6 +8,8 @@
 //  - In an income category, money out (a clawback) reduces income.
 //  - Uncategorized money out counts as spending; uncategorized money in counts as income.
 //  - Pending transactions count unless the "include pending" setting is off.
+//  - A purchase paid from a savings bucket still counts as spending, but not against its
+//    category's budget: that money was set aside in advance.
 import { periodFor } from './periods.js';
 
 const BASE_WHERE = 't.deleted_at IS NULL AND t.excluded = 0 AND t.date >= ? AND t.date <= ?';
@@ -53,10 +55,11 @@ export function summarize(db, start, end, { includePending = true } = {}) {
 export function categorySpent(db, categoryId, start, end, { includePending = true } = {}) {
   const r = db.get(
     `SELECT COALESCE(SUM(t.amount_cents), 0) AS net FROM transactions t
-     WHERE t.category_id = ? AND ${BASE_WHERE}${pendingClause(includePending)}`,
+     WHERE t.category_id = ? AND ${BASE_WHERE}${pendingClause(includePending)}
+       AND NOT EXISTS (SELECT 1 FROM bucket_moves m WHERE m.transaction_id = t.id AND m.kind = 'paid_from')`,
     [categoryId, start, end],
   );
-  return -r.net;
+  return -r.net || 0;
 }
 
 /** Cumulative daily spending for a range, used for the dashboard line chart. */

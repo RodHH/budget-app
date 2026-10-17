@@ -1,6 +1,7 @@
 // Optional sample data. Every row created here is flagged is_sample = 1, shown with a
 // "Sample" label in the app, and removed in one step by removeSample().
 import { addDays } from './dates.js';
+import { deleteBucketDataForAccounts } from './buckets.js';
 
 function catId(db, key) {
   return db.get('SELECT id FROM categories WHERE system_key = ?', [key])?.id ?? null;
@@ -77,6 +78,8 @@ export function loadSample(db, today, now) {
 export function removeSample(db) {
   return db.tx(() => {
     const sampleBudgetCats = db.all('SELECT category_id FROM budgets WHERE is_sample = 1').map((r) => r.category_id);
+    db.run('DELETE FROM bucket_moves WHERE transaction_id IN (SELECT id FROM transactions WHERE is_sample = 1)');
+    deleteBucketDataForAccounts(db, 'SELECT id FROM accounts WHERE is_sample = 1');
     db.run('DELETE FROM transactions WHERE is_sample = 1');
     db.run('DELETE FROM transactions WHERE account_id IN (SELECT id FROM accounts WHERE is_sample = 1)');
     db.run('DELETE FROM accounts WHERE is_sample = 1');

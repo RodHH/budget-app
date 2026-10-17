@@ -3,6 +3,7 @@
 // It imports only pure modules; anything platform-specific (password hashing, encryption,
 // Plaid HTTP, web push) is injected through `services`.
 import { evaluateAlerts } from './core/alerts.js';
+import { applyRuleBucket, bucketActivity, bucketsView, deleteBucketDataForAccounts, isSavingsAccount, movesForTransactions, setTransactionBuckets } from './core/buckets.js';
 import { seedCategories } from './core/categories.js';
 import { addDays, isValidDate, monthKey, monthRange, shiftMonth, todayIn } from './core/dates.js';
 import { PERIODS, describeSchedule, periodFor } from './core/periods.js';
@@ -228,7 +229,7 @@ export function createApp({ db, config = {}, services = {}, now = () => new Date
     const w = where.join(' AND ');
     const rows = db.all(`${TXN_SELECT} WHERE ${w} ORDER BY t.date DESC, t.id DESC LIMIT ? OFFSET ?`, [...params, limit, offset]);
     const agg = db.get(`SELECT COUNT(*) AS n, COALESCE(SUM(t.amount_cents),0) AS total FROM transactions t LEFT JOIN categories c ON c.id = t.category_id WHERE ${w}`, params);
-    return { transactions: rows.map(txnOut), total: agg.n, sum_cents: agg.total, limit, offset };
+    return { transactions: withBuckets(rows).map(txnOut), total: agg.n, sum_cents: agg.total, limit, offset };
   }
 
   function txnOut(t) {
@@ -238,13 +239,18 @@ export function createApp({ db, config = {}, services = {}, now = () => new Date
       category_name: t.category_name, category_icon: t.category_icon, category_kind: t.category_kind,
       category_archived: !!t.category_archived, notes: t.notes, pending: !!t.pending, excluded: !!t.excluded,
       source: t.source, category_locked: !!t.category_locked, is_sample: !!t.is_sample, is_sandbox: !!t.is_sandbox,
-      plaid_category: t.plaid_category, updated_at: t.updated_at,
+      plaid_category: t.plaid_category, updated_at: t.updated_at, buckets: t.buckets || [],
     };
+  }
+  /** Attach savings-bucket tags to transaction rows before txnOut. */
+  function withBuckets(rows) {
+    const moves = movesForTransactions(db, rows.map((r) => r.id));
+    return rows.map((r) => ({ ...r, buckets: moves.get(r.id) || [] }));
   }
   const getTxn = (id) => {
     const t = db.get(`${TXN_SELECT} WHERE t.id = ? AND t.deleted_at IS NULL`, [Number(id)]);
     if (!t) throw notFound('Transaction not found.');
-    return t;
+    return withBuckets([t])[0];
   };
 
   function dashboard(q) {
@@ -277,7 +283,7 @@ export function createApp({ db, config = {}, services = {}, now = () => new Date
       by_category: cur.byCategory.map((r) => ({ ...r, ...(r.category_id ? cats.get(r.category_id) : { name: 'Uncategorized', icon: '❔', color: '#858e89' }) })),
       daily: { current: month === monthKey(t) ? curDaily.slice(0, daysElapsed) : curDaily, previous: cumulative(dailySpending(db, prevRange.start, prevRange.end, opts), prevRange.start, prevRange.end) },
       budgets, budget_total_cents: totalBudget, budget_spent_cents: totalSpent, budget_remaining_cents: totalBudget - totalSpent,
-      recent: db.all(`${TXN_SELECT} WHERE t.deleted_at IS NULL ORDER BY t.date DESC, t.id DESC LIMIT 6`).map(txnOut),
+      recent: withBuckets(db.all(`${TXN_SELECT} WHERE t.deleted_at IS NULL ORDER BY t.date DESC, t.id DESC LIMIT 6`)).map(txnOut),
       counts: {
         uncategorized: db.get('SELECT COUNT(*) n FROM transactions WHERE deleted_at IS NULL AND category_id IS NULL AND date >= ? AND date <= ?', [range.start, range.end]).n,
         pending: db.get('SELECT COUNT(*) n FROM transactions WHERE deleted_at IS NULL AND pending = 1').n,
@@ -352,7 +358,7 @@ export function createApp({ db, config = {}, services = {}, now = () => new Date
   }
 
   // ---------------------------------------------------------------- backup
-  const BACKUP_TABLES = ['categories', 'budgets', 'accounts', 'transactions', 'rules', 'alert_events'];
+  const BACKUP_TABLES = ['categories', 'budgets', 'accounts', 'transactions', 'savings_buckets', 'rules', 'alert_events', 'bucket_moves'];
   function exportJson() {
     const data = { app: 'budgeting-app', schema_version: SCHEMA_VERSION, exported_at: nowIso(), settings: getSettings() };
     for (const t of BACKUP_TABLES) data[t] = db.all(`SELECT * FROM ${t} ORDER BY rowid`);
@@ -366,7 +372,7 @@ export function createApp({ db, config = {}, services = {}, now = () => new Date
     for (const t of BACKUP_TABLES) cols[t] = new Set(db.all(`PRAGMA table_info(${t})`).map((c) => c.name));
     db.tx(() => {
       db.run('PRAGMA defer_foreign_keys = ON');
-      for (const t of ['alert_events', 'rules', 'transactions', 'budgets', 'accounts', 'categories']) db.run(`DELETE FROM ${t}`);
+      for (const t of ['bucket_moves', 'alert_events', 'rules', 'savings_buckets', 'transactions', 'budgets', 'accounts', 'categories']) db.run(`DELETE FROM ${t}`);
       for (const t of BACKUP_TABLES) {
         for (const row of data[t] || []) {
           const keys = Object.keys(row).filter((k) => cols[t].has(k));
@@ -466,6 +472,7 @@ export function createApp({ db, config = {}, services = {}, now = () => new Date
     categories: categoriesView(),
     accounts: accountsView(),
     items: itemsView(),
+    savings: bucketsView(db, today()),
     features: featureStatus(),
     has_sample: hasSample(db),
     unread_alerts: db.get("SELECT COUNT(*) n FROM alert_events WHERE read_at IS NULL AND push_result IS NOT 'folded'").n,
@@ -551,8 +558,8 @@ export function createApp({ db, config = {}, services = {}, now = () => new Date
     if (amount === 0) throw bad('Amount can’t be $0.');
     let categoryId = categoryRef(body.category_id);
     let locked = categoryId ? 1 : 0;
+    const rule = findRule(loadRules(db), { merchant, original_name: merchant });
     if (!categoryId) {
-      const rule = findRule(loadRules(db), { merchant, original_name: merchant });
       if (rule) categoryId = rule.category_id;
       locked = 0;
     }
@@ -562,6 +569,8 @@ export function createApp({ db, config = {}, services = {}, now = () => new Date
       [accountRef(body.account_id), date, amount, merchant, merchant, categoryId, str(body.notes, 500, 'Notes'),
         body.pending ? 1 : 0, body.excluded ? 1 : 0, locked, nowIso(), nowIso()],
     ).lastInsertRowid;
+    if (Array.isArray(body.buckets)) tagBuckets(db.get('SELECT * FROM transactions WHERE id = ?', [id]), body.buckets);
+    else applyRuleBucket(db, rule, id, accountRef(body.account_id), nowIso());
     const alerts = checkAlerts();
     return { transaction: txnOut(getTxn(id)), alerts };
   });
@@ -588,13 +597,17 @@ export function createApp({ db, config = {}, services = {}, now = () => new Date
       set('updated_at', nowIso());
       db.run(`UPDATE transactions SET ${sets.join(', ')} WHERE id = ?`, [...vals, t.id]);
     }
+    if (Array.isArray(body.buckets)) tagBuckets(db.get('SELECT * FROM transactions WHERE id = ?', [t.id]), body.buckets);
     const alerts = checkAlerts();
     return { transaction: txnOut(getTxn(t.id)), alerts };
   });
   route('DELETE', '/api/transactions/:id', ({ params }) => {
     const t = getTxn(params.id);
     if (t.source !== 'manual') throw bad('Bank transactions can’t be deleted (they would come back on the next sync). Exclude it instead.');
-    db.run('DELETE FROM transactions WHERE id = ?', [t.id]);
+    db.tx(() => {
+      db.run('DELETE FROM bucket_moves WHERE transaction_id = ?', [t.id]);
+      db.run('DELETE FROM transactions WHERE id = ?', [t.id]);
+    });
     return { ok: true };
   });
   route('POST', '/api/transactions/bulk', ({ body }) => {
@@ -613,26 +626,35 @@ export function createApp({ db, config = {}, services = {}, now = () => new Date
   });
 
   // Rules
-  const rulesView = () => db.all(`SELECT r.*, c.name AS category_name, c.icon AS category_icon, c.archived AS category_archived
-    FROM rules r LEFT JOIN categories c ON c.id = r.category_id ORDER BY r.sort_order, r.id`);
+  const rulesView = () => db.all(`SELECT r.*, c.name AS category_name, c.icon AS category_icon, c.archived AS category_archived,
+      b.name AS bucket_name, b.icon AS bucket_icon
+    FROM rules r LEFT JOIN categories c ON c.id = r.category_id LEFT JOIN savings_buckets b ON b.id = r.bucket_id ORDER BY r.sort_order, r.id`);
+  const bucketRef = (v) => {
+    if (v === null || v === undefined || v === '') return null;
+    const b = db.get('SELECT id FROM savings_buckets WHERE id = ?', [Number(v)]);
+    if (!b) throw bad('That savings bucket no longer exists.');
+    return b.id;
+  };
   function validRule(body, prev = {}) {
     const match_type = body.match_type ?? prev.match_type ?? 'contains';
     if (!MATCH_TYPES.includes(match_type)) throw bad('Unknown match type.');
     const pattern = body.pattern !== undefined ? str(body.pattern, 120, 'Merchant text') : prev.pattern;
     if (!pattern) throw bad('Enter the merchant text to match.');
-    const category_id = body.category_id !== undefined ? categoryRef(body.category_id) : prev.category_id;
+    const category_id = body.category_id !== undefined ? categoryRef(body.category_id) : prev.category_id ?? null;
     const rename_to = body.rename_to !== undefined ? (str(body.rename_to, 120, 'Rename') || null) : prev.rename_to ?? null;
-    if (!category_id && !rename_to) throw bad('Pick a category (or a new merchant name) for this rule.');
-    return { match_type, pattern, category_id, rename_to, enabled: body.enabled !== undefined ? (body.enabled ? 1 : 0) : (prev.enabled ?? 1) };
+    const bucket_id = body.bucket_id !== undefined ? bucketRef(body.bucket_id) : prev.bucket_id ?? null;
+    if (!category_id && !rename_to && !bucket_id) throw bad('Pick a category (or a new merchant name) for this rule.');
+    return { match_type, pattern, category_id, rename_to, bucket_id, enabled: body.enabled !== undefined ? (body.enabled ? 1 : 0) : (prev.enabled ?? 1) };
   }
   function applyRuleToExisting(rule) {
-    const cand = db.all('SELECT id, merchant, original_name, category_locked, merchant_locked FROM transactions WHERE deleted_at IS NULL');
+    const cand = db.all('SELECT id, account_id, merchant, original_name, category_locked, merchant_locked FROM transactions WHERE deleted_at IS NULL');
     let n = 0;
     db.tx(() => {
       for (const t of cand) {
         if (!ruleMatches(rule, t)) continue;
         if (rule.category_id && !t.category_locked) { db.run('UPDATE transactions SET category_id = ?, updated_at = ? WHERE id = ?', [rule.category_id, nowIso(), t.id]); n++; }
         if (rule.rename_to && !t.merchant_locked) db.run('UPDATE transactions SET merchant = ? WHERE id = ?', [rule.rename_to, t.id]);
+        if (applyRuleBucket(db, rule, t.id, t.account_id, nowIso()) && !rule.category_id) n++;
       }
     });
     return n;
@@ -641,8 +663,8 @@ export function createApp({ db, config = {}, services = {}, now = () => new Date
   route('POST', '/api/rules', ({ body }) => {
     const r = validRule(body);
     const max = db.get('SELECT COALESCE(MAX(sort_order), -1) m FROM rules').m;
-    const id = db.run('INSERT INTO rules (match_type, pattern, category_id, rename_to, sort_order, enabled, created_at) VALUES (?,?,?,?,?,?,?)',
-      [r.match_type, r.pattern, r.category_id, r.rename_to, max + 1, r.enabled, nowIso()]).lastInsertRowid;
+    const id = db.run('INSERT INTO rules (match_type, pattern, category_id, rename_to, bucket_id, sort_order, enabled, created_at) VALUES (?,?,?,?,?,?,?,?)',
+      [r.match_type, r.pattern, r.category_id, r.rename_to, r.bucket_id, max + 1, r.enabled, nowIso()]).lastInsertRowid;
     const applied = body.apply_existing ? applyRuleToExisting({ ...r, id }) : 0;
     if (applied) checkAlerts();
     return { rule: rulesView().find((x) => x.id === id), applied };
@@ -651,7 +673,7 @@ export function createApp({ db, config = {}, services = {}, now = () => new Date
     const prev = db.get('SELECT * FROM rules WHERE id = ?', [Number(params.id)]);
     if (!prev) throw notFound('Rule not found.');
     const r = validRule(body, prev);
-    db.run('UPDATE rules SET match_type = ?, pattern = ?, category_id = ?, rename_to = ?, enabled = ?, is_sample = 0 WHERE id = ?', [r.match_type, r.pattern, r.category_id, r.rename_to, r.enabled, prev.id]);
+    db.run('UPDATE rules SET match_type = ?, pattern = ?, category_id = ?, rename_to = ?, bucket_id = ?, enabled = ?, is_sample = 0 WHERE id = ?', [r.match_type, r.pattern, r.category_id, r.rename_to, r.bucket_id, r.enabled, prev.id]);
     const applied = body.apply_existing ? applyRuleToExisting(r) : 0;
     if (applied) checkAlerts();
     return { rule: rulesView().find((x) => x.id === prev.id), applied };
@@ -670,16 +692,102 @@ export function createApp({ db, config = {}, services = {}, now = () => new Date
     return { applied };
   });
 
+  // Savings buckets
+  function tagBuckets(txn, moves) {
+    try { setTransactionBuckets(db, txn, moves.filter((m) => m && m.bucket_id), nowIso()); } catch (e) { throw bad(e.message); }
+  }
+  const getBucket = (id) => {
+    const b = db.get('SELECT * FROM savings_buckets WHERE id = ?', [Number(id)]);
+    if (!b) throw notFound('Bucket not found.');
+    return b;
+  };
+  const bucketOut = (id) => bucketsView(db, today()).buckets.find((b) => b.id === id);
+  function validBucket(body, prev = {}) {
+    const name = body.name !== undefined ? str(body.name, 60, 'Name') : prev.name;
+    if (!name) throw bad('Name the bucket.');
+    const optCents = (k, label) => {
+      if (body[k] === undefined) return prev[k] ?? null;
+      if (body[k] === null || body[k] === '' || body[k] === 0) return null;
+      const c = cents(body[k], label);
+      if (c < 0) throw bad(`${label} can’t be negative.`);
+      return c;
+    };
+    const goal_date = body.goal_date !== undefined ? (body.goal_date || null) : prev.goal_date ?? null;
+    if (goal_date && !isValidDate(goal_date)) throw bad('Pick a valid goal date.');
+    return {
+      name, icon: body.icon !== undefined ? (str(body.icon, 8, 'Icon') || '💰') : prev.icon || '💰',
+      color: body.color !== undefined ? validColor(body.color) : prev.color || validColor(),
+      monthly_target_cents: optCents('monthly_target_cents', 'Monthly target'), goal_cents: optCents('goal_cents', 'Goal'), goal_date,
+    };
+  }
+  route('GET', '/api/buckets', () => bucketsView(db, today()));
+  route('POST', '/api/buckets', ({ body }) => {
+    const account = db.get('SELECT * FROM accounts WHERE id = ?', [Number(body.account_id)]);
+    if (!isSavingsAccount(account)) throw bad('Pick a savings account for this bucket.');
+    const b = validBucket(body);
+    const start = body.starting_cents ? cents(body.starting_cents, 'Starting amount') : 0;
+    if (start < 0) throw bad('Starting amount can’t be negative.');
+    const max = db.get('SELECT COALESCE(MAX(sort_order), -1) m FROM savings_buckets').m;
+    const id = db.tx(() => {
+      const newId = db.run('INSERT INTO savings_buckets (account_id, name, icon, color, monthly_target_cents, goal_cents, goal_date, sort_order, created_at) VALUES (?,?,?,?,?,?,?,?,?)',
+        [account.id, b.name, b.icon, b.color, b.monthly_target_cents, b.goal_cents, b.goal_date, max + 1, nowIso()]).lastInsertRowid;
+      if (start) db.run("INSERT INTO bucket_moves (bucket_id, kind, amount_cents, date, note, created_at) VALUES (?, 'start', ?, ?, 'Already saved', ?)", [newId, start, today(), nowIso()]);
+      return newId;
+    });
+    return { bucket: bucketOut(id) };
+  });
+  route('PATCH', '/api/buckets/:id', ({ params, body }) => {
+    const prev = getBucket(params.id);
+    const b = validBucket(body, prev);
+    db.run('UPDATE savings_buckets SET name = ?, icon = ?, color = ?, monthly_target_cents = ?, goal_cents = ?, goal_date = ? WHERE id = ?',
+      [b.name, b.icon, b.color, b.monthly_target_cents, b.goal_cents, b.goal_date, prev.id]);
+    return { bucket: bucketOut(prev.id) };
+  });
+  route('DELETE', '/api/buckets/:id', ({ params }) => {
+    const b = getBucket(params.id);
+    if (bucketOut(b.id).balance_cents !== 0) throw bad('Move this bucket’s money somewhere else first, so nothing goes missing.');
+    db.tx(() => {
+      db.run('UPDATE rules SET bucket_id = NULL WHERE bucket_id = ?', [b.id]);
+      db.run('DELETE FROM bucket_moves WHERE bucket_id = ?', [b.id]);
+      db.run('DELETE FROM savings_buckets WHERE id = ?', [b.id]);
+    });
+    return { ok: true };
+  });
+  route('GET', '/api/buckets/:id/activity', ({ params }) => ({ bucket: bucketOut(getBucket(params.id).id), activity: bucketActivity(db, Number(params.id)) }));
+  // Move money between buckets in the same account, or between a bucket and "not assigned" (null).
+  route('POST', '/api/buckets/move', ({ body }) => {
+    const from = body.from_bucket_id ? getBucket(body.from_bucket_id) : null;
+    const to = body.to_bucket_id ? getBucket(body.to_bucket_id) : null;
+    if (!from && !to) throw bad('Pick where the money goes.');
+    if (from && to && from.id === to.id) throw bad('Pick two different buckets.');
+    if (from && to && from.account_id !== to.account_id) throw bad('Both buckets need to be in the same savings account.');
+    const amount = cents(body.amount_cents, 'Amount');
+    if (amount <= 0) throw bad('Enter an amount above $0.');
+    const note = str(body.note, 120, 'Note') || (from && to ? `Moved from ${from.name} to ${to.name}` : from ? `Moved from ${from.name} to not assigned` : `Assigned to ${to.name}`);
+    db.tx(() => {
+      const add = (b, a) => db.run("INSERT INTO bucket_moves (bucket_id, kind, amount_cents, date, note, created_at) VALUES (?, 'adjust', ?, ?, ?, ?)", [b.id, a, today(), note, nowIso()]);
+      if (from) add(from, -amount);
+      if (to) add(to, amount);
+    });
+    return bucketsView(db, today());
+  });
+  route('POST', '/api/buckets/reorder', ({ body }) => {
+    if (!Array.isArray(body.ids)) throw bad('Send the buckets in their new order.');
+    db.tx(() => body.ids.forEach((id, i) => db.run('UPDATE savings_buckets SET sort_order = ? WHERE id = ?', [i, Number(id)])));
+    return bucketsView(db, today());
+  });
+
   // Accounts
   const ACCOUNT_TYPES = ['depository', 'credit', 'loan', 'investment', 'cash', 'other'];
   route('GET', '/api/accounts', () => ({ accounts: accountsView(), items: itemsView() }));
   route('POST', '/api/accounts', ({ body }) => {
     const name = str(body.name, 60, 'Name');
     if (!name) throw bad('Name the account.');
-    const type = body.type || 'depository';
+    // "savings" is offered as its own choice in the app; it's a depository account with a savings subtype.
+    const type = body.type === 'savings' ? 'depository' : (body.type || 'depository');
     if (!ACCOUNT_TYPES.includes(type)) throw bad('Unknown account type.');
     const bal = body.current_balance_cents === undefined || body.current_balance_cents === null ? null : cents(body.current_balance_cents, 'Balance');
-    const id = db.run("INSERT INTO accounts (name, type, source, institution, current_balance_cents, created_at) VALUES (?,?, 'manual', 'Manual', ?, ?)", [name, type, bal, nowIso()]).lastInsertRowid;
+    const id = db.run("INSERT INTO accounts (name, type, subtype, source, institution, current_balance_cents, created_at) VALUES (?,?,?, 'manual', 'Manual', ?, ?)", [name, type, body.type === 'savings' ? 'savings' : null, bal, nowIso()]).lastInsertRowid;
     return { account: accountsView().find((a) => a.id === id) };
   });
   route('PATCH', '/api/accounts/:id', ({ params, body }) => {
@@ -700,6 +808,8 @@ export function createApp({ db, config = {}, services = {}, now = () => new Date
     if (!a) throw notFound('Account not found.');
     if (a.plaid_item_id) throw bad('Disconnect the bank first; its accounts are managed by the connection.');
     db.tx(() => {
+      deleteBucketDataForAccounts(db, '?', [a.id]);
+      db.run('DELETE FROM bucket_moves WHERE transaction_id IN (SELECT id FROM transactions WHERE account_id = ?)', [a.id]);
       db.run('DELETE FROM transactions WHERE account_id = ?', [a.id]);
       db.run('DELETE FROM accounts WHERE id = ?', [a.id]);
     });
@@ -775,6 +885,7 @@ export function createApp({ db, config = {}, services = {}, now = () => new Date
     }
     db.tx(() => {
       if (query.delete_data === '1') {
+        deleteBucketDataForAccounts(db, 'SELECT id FROM accounts WHERE plaid_item_id = ?', [it.id]);
         db.run('DELETE FROM transactions WHERE account_id IN (SELECT id FROM accounts WHERE plaid_item_id = ?)', [it.id]);
         db.run('DELETE FROM accounts WHERE plaid_item_id = ?', [it.id]);
       } else {
